@@ -29,22 +29,32 @@ const fmt = (v, d = 4) => {
   return s === '' ? '0' : s
 }
 
-/** 百分比格式化（带颜色） */
-const pct = (v, showSign = true) => {
+/** 百分比格式化（涨幅/正数，正值绿色，不带 + 号） */
+const pct = (v) => {
   if (v === null || v === undefined || v === '') return <Text type="secondary">-</Text>
   const n = Number(v)
   if (isNaN(n)) return '-'
-  const sign = showSign && n > 0 ? '+' : ''
   const color = n > 0 ? '#52c41a' : n < 0 ? '#ff4d4f' : '#999'
-  return <Text style={{ color, fontWeight: 600 }}>{sign}{n.toFixed(2)}%</Text>
+  return <Text style={{ color, fontWeight: 600 }}>{n.toFixed(2)}%</Text>
 }
 
-/** 市值格式化 B/M/万 */
+/** 百分比格式化（跌幅，固定红色，不带 + 号） */
+const pctDecline = (v) => {
+  if (v === null || v === undefined || v === '') return <Text type="secondary">-</Text>
+  const n = Number(v)
+  if (isNaN(n)) return '-'
+  return <Text style={{ color: '#ff4d4f', fontWeight: 600 }}>{n.toFixed(2)}%</Text>
+}
+
+/** 市值格式化（单位：亿元人民币）
+ * 1亿 = 1e8，1万 = 1e4
+ * 例：10,142,107,444 → 101.42亿
+ */
 const mktCap = (v) => {
   if (!v) return '-'
   const n = Number(v)
   if (isNaN(n)) return '-'
-  if (n >= 1e9) return `${(n / 1e9).toFixed(2)}亿`
+  if (n >= 1e8) return `${(n / 1e8).toFixed(2)}亿`
   if (n >= 1e4) return `${(n / 1e4).toFixed(2)}万`
   return n.toFixed(2)
 }
@@ -123,6 +133,7 @@ const LongInflowPage = () => {
       dataIndex: 'startTime',
       key: 'startTime',
       width: 110,
+      sorter: (a, b) => (a.startTime || 0) - (b.startTime || 0),
       render: (t) => <span style={{ fontSize: 12, color: '#999' }}>{formatTime(t)}</span>,
     },
     {
@@ -130,6 +141,7 @@ const LongInflowPage = () => {
       dataIndex: 'updateTime',
       key: 'updateTime',
       width: 110,
+      sorter: (a, b) => (a.updateTime || 0) - (b.updateTime || 0),
       render: (t) => <span style={{ fontSize: 12, color: '#999' }}>{formatTime(t)}</span>,
     },
     {
@@ -162,7 +174,7 @@ const LongInflowPage = () => {
       key: 'decline',
       width: 100,
       align: 'right',
-      render: (v) => pct(v),
+      render: (v) => pctDecline(v),
     },
     {
       title: '看涨情绪',
