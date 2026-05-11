@@ -5,6 +5,7 @@
 import Home from './pages/Home'
 import TokenList from './pages/TokenList'
 import LongInflow from './pages/LongInflow'
+import MarketAnalysis from './pages/MarketAnalysis'
 
 export const routes = [
   {
@@ -18,5 +19,9 @@ export const routes = [
   {
     path: '/long-inflow',
     element: <LongInflow />,
+  },
+  {
+    path: '/market-analysis',
+    element: <MarketAnalysis />,
   },
 ]
