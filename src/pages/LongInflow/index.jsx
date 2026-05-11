@@ -1,11 +1,12 @@
 /**
  * 资金异动看涨监控页面
  * 参考：https://www.valuescan.io/AIGEMs/longInflowAlert
+ * 响应式：表格横向滚动
  */
 
 import { useState, useEffect, useCallback } from 'react'
-import { Card, Table, Input, Button, Space, Typography, Tag, Empty, Spin, Tooltip, Badge, Dropdown } from 'antd'
-import { SearchOutlined, ReloadOutlined, StarOutlined, FireOutlined } from '@ant-design/icons'
+import { Card, Table, Input, Button, Space, Typography, Tag, Empty, Spin, Badge } from 'antd'
+import { SearchOutlined, ReloadOutlined, FireOutlined } from '@ant-design/icons'
 import { getFundsMovementList } from '@/api/services'
 
 const { Text } = Typography
@@ -24,12 +25,11 @@ const fmt = (v, d = 4) => {
   if (v === null || v === undefined || v === '') return '-'
   const n = Number(v)
   if (isNaN(n)) return '-'
-  // 自动判断小数位
   const s = n.toFixed(d).replace(/\.?0+$/, '')
   return s === '' ? '0' : s
 }
 
-/** 百分比格式化（涨幅/正数，正值绿色，不带 + 号） */
+/** 百分比格式化（涨幅，正值绿色，不带 + 号） */
 const pct = (v) => {
   if (v === null || v === undefined || v === '') return <Text type="secondary">-</Text>
   const n = Number(v)
@@ -46,10 +46,7 @@ const pctDecline = (v) => {
   return <Text style={{ color: '#ff4d4f', fontWeight: 600 }}>{n.toFixed(2)}%</Text>
 }
 
-/** 市值格式化（单位：亿元人民币）
- * 1亿 = 1e8，1万 = 1e4
- * 例：10,142,107,444 → 101.42亿
- */
+/** 市值格式化（单位：亿元人民币） */
 const mktCap = (v) => {
   if (!v) return '-'
   const n = Number(v)
@@ -88,10 +85,13 @@ const LongInflowPage = () => {
 
   // 前端过滤
   const filteredData = searchText
-    ? data.filter(item => item.symbol?.toLowerCase().includes(searchText.toLowerCase()) || item.name?.toLowerCase().includes(searchText.toLowerCase()))
+    ? data.filter(item =>
+      item.symbol?.toLowerCase().includes(searchText.toLowerCase()) ||
+      item.name?.toLowerCase().includes(searchText.toLowerCase())
+    )
     : data
 
-  // ==================== 表格列定义（严格对齐截图） ====================
+  // 表格列定义（按原始顺序）
   const columns = [
     {
       title: '#',
@@ -109,11 +109,10 @@ const LongInflowPage = () => {
       fixed: 'left',
       render: (_, r) => (
         <Space size={4}>
-          {/* 代币图标占位 - 可后续接入 coin icon */}
           <div style={{
             width: 24, height: 24, borderRadius: '50%',
-            background: '#e8e8e8', display: 'flex', alignItems: 'center', justifyContent: 'center',
-            fontSize: 10, fontWeight: 700, color: '#666'
+            background: '#334155', display: 'flex', alignItems: 'center', justifyContent: 'center',
+            fontSize: 10, fontWeight: 700, color: '#e2e8f0', flexShrink: 0,
           }}>
             {r.symbol?.charAt(0)}
           </div>
@@ -223,14 +222,21 @@ const LongInflowPage = () => {
   ]
 
   return (
-    <div style={{ padding: '4px' }}>
+    <div style={{ padding: 4 }}>
       <Card
         bordered={false}
         size="small"
         styles={{ body: { padding: '16px 16px 8px' } }}
       >
         {/* 标题栏 */}
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <div style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          marginBottom: 16,
+          flexWrap: 'wrap',
+          gap: 8,
+        }}>
           <Space>
             <Text strong style={{ color: '#fff', fontSize: 15 }}>
               资金异动看涨监控
@@ -252,21 +258,19 @@ const LongInflowPage = () => {
               type="primary"
               icon={<SearchOutlined />}
               onClick={() => setSearchText(searchText)}
-
             >
               搜索
             </Button>
             <Button
               icon={<ReloadOutlined />}
               onClick={handleRefresh}
-
             >
               刷新
             </Button>
           </Space.Compact>
         </div>
 
-        {/* 数据表格 - 暗色主题 */}
+        {/* 数据表格 - 横向滚动 */}
         <Spin spinning={loading}>
           <Table
             columns={columns}
@@ -276,12 +280,15 @@ const LongInflowPage = () => {
               pageSize: 20,
               showSizeChanger: true,
               showQuickJumper: true,
-              showTotal: (total) => <Text type="secondary" style={{ fontSize: 12 }}>共 {total} 条</Text>,
+              showTotal: (total) => (
+                <Text type="secondary" style={{ fontSize: 12 }}>
+                  共 {total} 条
+                </Text>
+              ),
               size: 'small',
             }}
             size="small"
             scroll={{ x: 1400 }}
-
           />
         </Spin>
 
