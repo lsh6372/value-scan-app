@@ -87,9 +87,14 @@ const parseResistance = (text, coin) => {
 
 // ==================== 时间格式化 ====================
 
+/** 格式化时间戳（自动检测秒/毫秒单位）
+ *  后端返回 ts 为秒级时间戳，需转换为毫秒
+ */
 const formatTime = (ts) => {
   if (!ts) return '-'
-  const d = new Date(ts)
+  // 自动检测单位：小于 1e12 视为秒级，否则为毫秒级
+  const tsMs = ts > 1e12 ? ts : ts * 1000
+  const d = new Date(tsMs)
   return `${String(d.getMonth() + 1).padStart(2, '0')}/${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}`
 }
 
