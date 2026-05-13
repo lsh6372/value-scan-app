@@ -215,7 +215,7 @@ const MarketAnalysisPage = () => {
   const connect = useCallback(() => {
     const url = buildSseUrl()
     if (!url) {
-      antMessage.error('请在 .env.local 中配置 VITE_SSE_WORKER_URL')
+      antMessage.error('VITE_SSE_WORKER_URL 未配置。本地开发检查 .env.local，Vercel 部署检查 Environment Variables。')
       return
     }
 
@@ -365,7 +365,7 @@ const MarketAnalysisPage = () => {
           <Space size={12}>
             <Text strong style={{ color: '#fff', fontSize: 15 }}>大盘分析</Text>
             <StatusBadge />
-            {lastUpdated && <Text type="secondary" style={{ fontSize: 11 }}>更�� {formatTime(lastUpdated)}</Text>}
+            {lastUpdated && <Text type="secondary" style={{ fontSize: 11 }}>更新时间 {formatTime(lastUpdated)}</Text>}
           </Space>
           <Space>
             <Button
