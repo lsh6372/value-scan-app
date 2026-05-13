@@ -27,19 +27,32 @@ wrangler login
 
 ---
 
-## 步骤三：配置 AK/SK（敏感信息）
+## 步骤三：配置 AK/SK 和 Telegram（敏感信息）
 
-使用 Wrangler 的 secret 功能存储 API 密钥：
+使用 Wrangler 的 secret 功能存储密钥：
 
 ```bash
-# 设置 API Key
+# ValueScan API Key
 wrangler secret put VALUESCAN_API_KEY
-# 然后粘贴：ak_5abf4b0182c14770bcf4a86fef67cbdb
+# 然后粘贴你的 API Key
 
-# 设置 Secret Key
+# ValueScan Secret Key
 wrangler secret put VALUESCAN_SECRET_KEY
-# 然后粘贴：sk_b3e9ce9dd2924127ad532b247ff035d0
+# 然后粘贴你的 Secret Key
+
+# Telegram Bot Token（可选，用于信号推送）
+wrangler secret put TELEGRAM_BOT_TOKEN
+# 然后粘贴你的 Telegram Bot Token
+
+# Telegram Chat ID（可选，用于信号推送）
+wrangler secret put TELEGRAM_CHAT_ID
+# 然后粘贴你的 Chat ID
 ```
+
+> **Telegram 配置说明**：
+> - Bot Token：从 @BotFather 获取（格式：`123456789:ABCdef...`）
+> - Chat ID：你的 Telegram 用户 ID 或群组 ID（向 @userinfobot 获取）
+> - 如果不填，页面中的 Telegram 推送功能将不可用
 
 ---
 
@@ -125,15 +138,27 @@ wrangler tail
 
 ```
 ValueScan/
-├── worker/                    # Cloudflare Worker
+├── worker/                    # Cloudflare Worker（SSE 代理 + Telegram 推送）
 │   ├── src/
 │   │   └── index.js          # Worker 代码
 │   ├── wrangler.toml         # Worker 配置
 │   └── package.json
 ├── src/
 │   ├── api/
-│   │   └── sse-sign.js       # 前端 SSE 工具（简化版）
+│   │   ├── sse-sign.js       # 前端 SSE 工具
+│   │   └── telegram.js       # Telegram 推送服务
 │   └── pages/
-│       └── MarketAnalysis/   # 大盘分析页面
+│       └── MarketAnalysis/   # 大盘分析页面（含 Telegram 推送）
 └── .env.local                # 环境变量（需配置 VITE_SSE_WORKER_URL）
 ```
+
+## Telegram 推送功能
+
+页面新增「Telegram 推送」功能：
+
+1. 在大盘分析页面打开开关
+2. 填写 Bot Token 和 Chat ID（首次需要，配置保存在浏览器本地）
+3. 点击「测试」验证连通性
+4. 当 BTC 或 ETH 信号发生变化时，自动推送通知到你的 Telegram
+
+> **注意**：必须先在 Worker 中配置好 `TELEGRAM_BOT_TOKEN` 和 `TELEGRAM_CHAT_ID`（见步骤三），否则测试和推送会失败。

@@ -1,11 +1,21 @@
 /**
- * Cloudflare Worker - SSE 代理
- * 作用：中转 ValueScan SSE 流，解决 CORS 问题
- * AK/SK 存储在 Worker 环境变量中，前端不可见
+ * Cloudflare Worker - SSE 代理 + Telegram 推送
+ *
+ * 路由：
+ *   GET  /           → SSE 代理（大盘信号流）
+ *   POST /telegram   → Telegram 推送
+ *
+ * 环境变量（通过 wrangler secret put 配置）：
+ *   VALUESCAN_API_KEY     - ValueScan API Key
+ *   VALUESCAN_SECRET_KEY  - ValueScan Secret Key
+ *   TELEGRAM_BOT_TOKEN    - Telegram Bot Token
+ *   TELEGRAM_CHAT_ID      - Telegram Chat ID
  */
 
 export default {
   async fetch(request, env, ctx) {
+    const url = new URL(request.url)
+
     // CORS 预检请求
     if (request.method === 'OPTIONS') {
       return new Response(null, {
@@ -13,81 +23,144 @@ export default {
       })
     }
 
-    // 只允许 GET 请求
+    // Telegram 推送路由
+    if (url.pathname === '/telegram' && request.method === 'POST') {
+      return handleTelegram(request, env)
+    }
+
+    // SSE 路由（默认 GET）
     if (request.method !== 'GET') {
       return new Response('Method Not Allowed', { status: 405 })
     }
-
-    // 从环境变量读取 AK/SK
-    const apiKey = env.VALUESCAN_API_KEY
-    const secretKey = env.VALUESCAN_SECRET_KEY
-
-    if (!apiKey || !secretKey) {
-      return new Response('Worker not configured: missing API credentials', { status: 500 })
-    }
-
-    // 构建签名
-    const timestamp = Date.now()
-    const nonce = generateNonce()
-    const signTarget = String(timestamp) + nonce
-    const sign = await hmacSha256(signTarget, secretKey)
-
-    // 构建 SSE URL
-    const sseUrl = `https://stream.valuescan.ai/stream/market/subscribe?apiKey=${encodeURIComponent(apiKey)}&sign=${sign}&timestamp=${timestamp}&nonce=${nonce}`
-
-    try {
-      // 连接 SSE 端点
-      const response = await fetch(sseUrl, {
-        headers: {
-          'Accept': 'text/event-stream',
-        },
-      })
-
-      if (!response.ok) {
-        return new Response(`SSE error: ${response.status}`, { status: response.status })
-      }
-
-      // 流式返回
-      return new Response(response.body, {
-        headers: {
-          ...corsHeaders(),
-          'Content-Type': 'text/event-stream',
-          'Cache-Control': 'no-cache',
-          'Connection': 'keep-alive',
-        },
-      })
-    } catch (err) {
-      return new Response(`SSE connection failed: ${err.message}`, { status: 502 })
-    }
+    return handleSSE(request, env)
   },
 }
 
-/**
- * CORS 响应头
- */
+// ==================== SSE 代理 ====================
+
+async function handleSSE(request, env) {
+  const apiKey = env.VALUESCAN_API_KEY
+  const secretKey = env.VALUESCAN_SECRET_KEY
+
+  if (!apiKey || !secretKey) {
+    return new Response('Worker not configured: missing API credentials', { status: 500 })
+  }
+
+  const timestamp = Date.now()
+  const nonce = generateNonce()
+  const signTarget = String(timestamp) + nonce
+  const sign = await hmacSha256(signTarget, secretKey)
+
+  const sseUrl = `https://stream.valuescan.ai/stream/market/subscribe?apiKey=${encodeURIComponent(apiKey)}&sign=${sign}&timestamp=${timestamp}&nonce=${nonce}`
+
+  try {
+    const response = await fetch(sseUrl, {
+      headers: { 'Accept': 'text/event-stream' },
+    })
+
+    if (!response.ok) {
+      return new Response(`SSE error: ${response.status}`, { status: response.status })
+    }
+
+    return new Response(response.body, {
+      headers: {
+        ...corsHeaders(),
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+      },
+    })
+  } catch (err) {
+    return new Response(`SSE connection failed: ${err.message}`, { status: 502 })
+  }
+}
+
+// ==================== Telegram 推送 ====================
+
+async function handleTelegram(request, env) {
+  const botToken = env.TELEGRAM_BOT_TOKEN
+  const chatId = env.TELEGRAM_CHAT_ID
+
+  if (!botToken || !chatId) {
+    return jsonResponse({ error: 'Telegram not configured on server' }, 500)
+  }
+
+  let body
+  try {
+    body = await request.json()
+  } catch {
+    return jsonResponse({ error: 'Invalid JSON body' }, 400)
+  }
+
+  const { text } = body
+  if (!text || typeof text !== 'string') {
+    return jsonResponse({ error: 'Missing text field' }, 400)
+  }
+
+  const MAX_LEN = 4000
+  const parts = text.length <= MAX_LEN
+    ? [text]
+    : chunkString(text, MAX_LEN)
+
+  try {
+    for (const part of parts) {
+      await sendTelegramMessage(botToken, chatId, part)
+    }
+    return jsonResponse({ ok: true, parts: parts.length })
+  } catch (err) {
+    return jsonResponse({ error: `Telegram send failed: ${err.message}` }, 502)
+  }
+}
+
+async function sendTelegramMessage(botToken, chatId, text) {
+  const url = `https://api.telegram.org/bot${botToken}/sendMessage`
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      chat_id: String(chatId),
+      text,
+      parse_mode: 'HTML',
+    }),
+  })
+
+  if (!response.ok) {
+    const err = await response.text()
+    throw new Error(`Telegram API error ${response.status}: ${err}`)
+  }
+}
+
+function chunkString(str, maxLen) {
+  const result = []
+  for (let i = 0; i < str.length; i += maxLen) {
+    result.push(str.slice(i, i + maxLen))
+  }
+  return result
+}
+
+// ==================== 工具函数 ====================
+
 function corsHeaders() {
   return {
     'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET, OPTIONS',
+    'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
     'Access-Control-Allow-Headers': 'Content-Type',
   }
 }
 
-/**
- * 生成 32 位随机字符串（模拟 uuid.uuid4().hex）
- */
+function jsonResponse(data, status = 200) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { ...corsHeaders(), 'Content-Type': 'application/json' },
+  })
+}
+
 function generateNonce() {
   return Array.from({ length: 32 }, () =>
     Math.floor(Math.random() * 16).toString(16)
   ).join('')
 }
 
-/**
- * HMAC-SHA256 签名
- * @param {string} message - 要签名的消息
- * @param {string} secret - 密钥
- * @returns {Promise<string>} 十六进制签名结果
- */
 async function hmacSha256(message, secret) {
   const encoder = new TextEncoder()
   const keyData = encoder.encode(secret)

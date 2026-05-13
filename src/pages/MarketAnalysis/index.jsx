@@ -3,20 +3,27 @@
  * - SSE 订阅大盘信号（BTC / ETH）
  * - 通过 Cloudflare Worker 代理，解决 CORS 问题
  * - 实时展示信号状态 + 消息日志
+ * - Telegram 信号变化推送
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { Card, Button, Typography, Tag, Space, Empty, Badge } from 'antd'
+import {
+  Card, Button, Typography, Tag, Space, Empty, Badge,
+  Input, Switch, Collapse, Tooltip,
+} from 'antd'
 import {
   PlayCircleOutlined,
   StopOutlined,
   ReloadOutlined,
   InfoCircleOutlined,
+  SendOutlined,
+  SettingOutlined,
 } from '@ant-design/icons'
 import { buildSseUrl } from '@/api/sse-sign'
+import { sendTelegramMessage, buildSignalText } from '@/api/telegram'
 import { message as antMessage } from 'antd'
 
-const { Text, Title } = Typography
+const { Text } = Typography
 
 // 信号颜色映射
 const SIGNAL_COLORS = {
@@ -31,20 +38,57 @@ const SIGNAL_BG = {
   '震荡': '#faad14',
 }
 
-// ==================== 信号解析 ====================
+// ==================== 消息区块解析 ====================
+
+/** 按币种分割消息内容，返回 { btc, eth }
+ *  分割依据：找 "BTC分析：" 和 "ETH分析：" 的位置，截取各自区间
+ */
+const splitMessageByCoin = (text) => {
+  if (!text) return { btc: '', eth: '' }
+  const btcIdx = text.indexOf('BTC分析：')
+  const ethIdx = text.indexOf('ETH分析：')
+  if (btcIdx === -1 && ethIdx === -1) return { btc: '', eth: '' }
+  const btc = btcIdx !== -1 ? text.slice(btcIdx) : ''
+  const eth = ethIdx !== -1 ? text.slice(ethIdx) : ''
+  return { btc, eth }
+}
 
 /** 从消息内容中解析指定币种的信号 */
 const parseSignal = (text, coin) => {
   if (!text) return null
-  // BTC分析：...AI综合分析：利空/利多/震荡
-  const pattern = new RegExp(`${coin}分析[\\s\\S]*?AI综合分析[:：]\\s*([^\\n]+)`)
-  const match = text.match(pattern)
+  const { btc, eth } = splitMessageByCoin(text)
+  const section = coin === 'BTC' ? btc : eth
+  if (!section) return null
+  const pattern = new RegExp(`(${coin}分析[\\s\\S]*?)AI综合分析[:：]\\s*([^\\n]+)`)
+  const match = section.match(pattern)
   if (!match) return null
-  const result = match[1].trim()
+  const result = match[2].trim()
   if (result.includes('利多')) return '利多'
   if (result.includes('利空')) return '利空'
   if (result.includes('震荡')) return '震荡'
   return null
+}
+
+/** 从消息内容中解析指定币种的关键支撑位 */
+const parseSupport = (text, coin) => {
+  if (!text) return null
+  const { btc, eth } = splitMessageByCoin(text)
+  const section = coin === 'BTC' ? btc : eth
+  if (!section) return null
+  const pattern = new RegExp(`关键支撑位[：:]\\s*([^\\n]+)`)
+  const match = section.match(pattern)
+  return match ? match[1].trim() : null
+}
+
+/** 从消息内容中解析指定币种的关键压力位 */
+const parseResistance = (text, coin) => {
+  if (!text) return null
+  const { btc, eth } = splitMessageByCoin(text)
+  const section = coin === 'BTC' ? btc : eth
+  if (!section) return null
+  const pattern = new RegExp(`关键压力位[：:]\\s*([^\\n]+)`)
+  const match = section.match(pattern)
+  return match ? match[1].trim() : null
 }
 
 // ==================== 时间格式化 ====================
@@ -60,6 +104,10 @@ const formatTime = (ts) => {
 const MessageLogItem = ({ item, index }) => {
   const btc = parseSignal(item.content, 'BTC')
   const eth = parseSignal(item.content, 'ETH')
+  const btcSupport = parseSupport(item.content, 'BTC')
+  const btcResistance = parseResistance(item.content, 'BTC')
+  const ethSupport = parseSupport(item.content, 'ETH')
+  const ethResistance = parseResistance(item.content, 'ETH')
 
   return (
     <div
@@ -69,7 +117,7 @@ const MessageLogItem = ({ item, index }) => {
         background: index === 0 ? 'rgba(59, 130, 246, 0.08)' : 'transparent',
       }}
     >
-      {/* 时间 + 序号 */}
+      {/* 时间 + 序号 + 信号标签 */}
       <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 4 }}>
         <Space size={8}>
           <Tag style={{ margin: 0, fontSize: 10, padding: '0 4px' }}>#{index + 1}</Tag>
@@ -107,15 +155,32 @@ const MessageLogItem = ({ item, index }) => {
         </Text>
       </div>
 
-      {/* 原始内容 */}
+      {/* BTC 支撑位/压力位 */}
+      {(btcSupport || btcResistance) && (
+        <div style={{ marginBottom: 2 }}>
+          <Text style={{ fontSize: 11, color: '#94a3b8' }}>BTC：</Text>
+          {btcSupport && <Text style={{ fontSize: 11, color: '#52c41a' }}>支撑 {btcSupport} </Text>}
+          {btcResistance && <Text style={{ fontSize: 11, color: '#ff4d4f' }}>压力 {btcResistance}</Text>}
+        </div>
+      )}
+
+      {/* ETH 支撑位/压力位 */}
+      {(ethSupport || ethResistance) && (
+        <div style={{ marginBottom: 2 }}>
+          <Text style={{ fontSize: 11, color: '#94a3b8' }}>ETH：</Text>
+          {ethSupport && <Text style={{ fontSize: 11, color: '#52c41a' }}>支撑 {ethSupport} </Text>}
+          {ethResistance && <Text style={{ fontSize: 11, color: '#ff4d4f' }}>压力 {ethResistance}</Text>}
+        </div>
+      )}
+
+      {/* 原始内容（折叠显示） */}
       <div
         style={{
           fontSize: 11,
-          color: '#94a3b8',
+          color: '#64748b',
           lineHeight: 1.6,
-          wordBreak: 'break-all',
           whiteSpace: 'pre-wrap',
-          maxHeight: 80,
+          maxHeight: 60,
           overflow: 'hidden',
         }}
       >
@@ -133,17 +198,104 @@ const MarketAnalysisPage = () => {
   // BTC / ETH 当前信号
   const [btcSignal, setBtcSignal] = useState(null)
   const [ethSignal, setEthSignal] = useState(null)
-  // 消息日志（最多保留 50 条）
+  // 消息日志（最多保留 5 条，最新在上面）
   const [logs, setLogs] = useState([])
   // 最后更新时间
   const [lastUpdated, setLastUpdated] = useState(null)
+
+  // Telegram 配置
+  const [telegramEnabled, setTelegramEnabled] = useState(false)
+  const [telegramBotToken, setTelegramBotToken] = useState('')
+  const [telegramChatId, setTelegramChatId] = useState('')
+  const [testingTelegram, setTestingTelegram] = useState(false)
 
   const eventSourceRef = useRef(null)
   const reconnectTimerRef = useRef(null)
   const reconnectDelayRef = useRef(1)
   const logIdRef = useRef(1)
 
-  // 连接 SSE
+  // 上一次的信号（用于检测变化）
+  const prevBtcSignalRef = useRef(null)
+  const prevEthSignalRef = useRef(null)
+
+  // ==================== Telegram 配置（localStorage） ====================
+
+  useEffect(() => {
+    const saved = localStorage.getItem('vs_telegram_config')
+    if (saved) {
+      try {
+        const cfg = JSON.parse(saved)
+        setTelegramEnabled(!!cfg.enabled)
+        setTelegramBotToken(cfg.botToken || '')
+        setTelegramChatId(cfg.chatId || '')
+      } catch { /* ignore */ }
+    }
+  }, [])
+
+  const saveTelegramConfig = (enabled, botToken, chatId) => {
+    localStorage.setItem('vs_telegram_config', JSON.stringify({ enabled, botToken, chatId }))
+  }
+
+  const handleTelegramEnabledChange = (checked) => {
+    setTelegramEnabled(checked)
+    saveTelegramConfig(checked, telegramBotToken, telegramChatId)
+  }
+
+  const handleBotTokenChange = (e) => {
+    const val = e.target.value
+    setTelegramBotToken(val)
+    saveTelegramConfig(telegramEnabled, val, telegramChatId)
+  }
+
+  const handleChatIdChange = (e) => {
+    const val = e.target.value
+    setTelegramChatId(val)
+    saveTelegramConfig(telegramEnabled, telegramBotToken, val)
+  }
+
+  // 测试 Telegram
+  const handleTestTelegram = async () => {
+    if (!telegramBotToken || !telegramChatId) {
+      antMessage.warning('请先填写 Bot Token 和 Chat ID')
+      return
+    }
+    setTestingTelegram(true)
+    try {
+      const res = await fetch(`${buildSseUrl()}/telegram`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text: '✅ ValueScan Telegram 推送测试成功！\n\n如果你收到这条消息，说明配置正确。',
+        }),
+      })
+      const data = await res.json()
+      if (data.ok) {
+        antMessage.success('测试消息发送成功！')
+      } else {
+        antMessage.error(data.error || '发送失败')
+      }
+    } catch (err) {
+      antMessage.error(err.message)
+    } finally {
+      setTestingTelegram(false)
+    }
+  }
+
+  // ==================== 发送 Telegram 信号变化通知 ====================
+
+  const notifySignalChange = useCallback(async (coin, newSignal) => {
+    if (!telegramEnabled || !buildSseUrl()) return
+    try {
+      const signals = { btc: btcSignal, eth: ethSignal }
+      const text = buildSignalText(signals)
+      await sendTelegramMessage(text)
+    } catch (err) {
+      console.error('Telegram 推送失败:', err)
+    }
+  }, [telegramEnabled, btcSignal, ethSignal])
+
+  // ==================== SSE 连接 ====================
+
   const connect = useCallback(() => {
     const url = buildSseUrl()
     if (!url) {
@@ -151,13 +303,11 @@ const MarketAnalysisPage = () => {
       return
     }
 
-    // 清除重连定时器
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current)
       reconnectTimerRef.current = null
     }
 
-    // 关闭旧连接
     if (eventSourceRef.current) {
       eventSourceRef.current.close()
     }
@@ -177,7 +327,6 @@ const MarketAnalysisPage = () => {
       es.close()
       eventSourceRef.current = null
 
-      // 指数退避重连（最多 60s）
       const delay = reconnectDelayRef.current
       reconnectDelayRef.current = Math.min(delay * 2, 60)
       antMessage.warning(`连接断开，${delay}s 后自动重连...`)
@@ -186,7 +335,6 @@ const MarketAnalysisPage = () => {
       }, delay * 1000)
     }
 
-    // 处理消息（event: market）
     es.addEventListener('market', (e) => {
       try {
         const payload = JSON.parse(e.data)
@@ -194,31 +342,48 @@ const MarketAnalysisPage = () => {
         const ts = payload.ts || Date.now()
         const uniqueId = payload.uniqueId || String(logIdRef.current++)
 
-        // 解析信号
         const newBtc = parseSignal(content, 'BTC')
         const newEth = parseSignal(content, 'ETH')
 
-        if (newBtc) setBtcSignal(newBtc)
-        if (newEth) setEthSignal(newEth)
+        // 检测信号变化 → Telegram 推送
+        if (newBtc && newBtc !== prevBtcSignalRef.current) {
+          prevBtcSignalRef.current = newBtc
+          setBtcSignal(newBtc)
+          // 信号变化时通知（延迟一点，等两个信号都解析完再发）
+          setTimeout(() => notifySignalChange('BTC', newBtc), 100)
+        }
+        if (newEth && newEth !== prevEthSignalRef.current) {
+          prevEthSignalRef.current = newEth
+          setEthSignal(newEth)
+          setTimeout(() => notifySignalChange('ETH', newEth), 100)
+        }
+
+        // 首次收到信号时也通知（prevRef 初始为 null）
+        if (newBtc && !prevBtcSignalRef.current) {
+          prevBtcSignalRef.current = newBtc
+          setBtcSignal(newBtc)
+        }
+        if (newEth && !prevEthSignalRef.current) {
+          prevEthSignalRef.current = newEth
+          setEthSignal(newEth)
+        }
+
         setLastUpdated(ts)
 
-        // 追加消息日志（最多 50 条）
         setLogs((prev) => {
-          const next = [...prev, { id: uniqueId, content, ts }]
-          return next.length > 50 ? next.slice(next.length - 50) : next
+          const next = [{ id: uniqueId, content, ts }, ...prev]
+          return next.length > 5 ? next.slice(0, 5) : next
         })
       } catch (err) {
         console.error('解析消息失败:', err)
       }
     })
-  }, [])
+  }, [notifySignalChange])
 
-  // 启动订阅
   const handleStart = () => {
     connect()
   }
 
-  // 终止订阅
   const handleStop = () => {
     if (reconnectTimerRef.current) {
       clearTimeout(reconnectTimerRef.current)
@@ -231,15 +396,10 @@ const MarketAnalysisPage = () => {
     setConnStatus('idle')
   }
 
-  // 清理
   useEffect(() => {
     return () => {
-      if (eventSourceRef.current) {
-        eventSourceRef.current.close()
-      }
-      if (reconnectTimerRef.current) {
-        clearTimeout(reconnectTimerRef.current)
-      }
+      if (eventSourceRef.current) eventSourceRef.current.close()
+      if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current)
     }
   }, [])
 
@@ -267,7 +427,6 @@ const MarketAnalysisPage = () => {
     )
   }
 
-  // 信号卡片
   const SignalCard = ({ coin, signal }) => {
     const colors = signal ? SIGNAL_COLORS[signal] : { bg: 'rgba(100,116,139,0.1)', border: '#334155', text: '#94a3b8' }
     const label = signal || '等待数据...'
@@ -347,6 +506,62 @@ const MarketAnalysisPage = () => {
         </div>
       </Card>
 
+      {/* Telegram 配置区 */}
+      <Card
+        bordered={false}
+        size="small"
+        styles={{ body: { padding: '10px 16px' } }}
+        style={{ marginBottom: 12 }}
+      >
+        <div style={{
+          display: 'flex',
+          justifyContent: 'space-between',
+          alignItems: 'center',
+          flexWrap: 'wrap',
+          gap: 10,
+        }}>
+          <Space size={12}>
+            <SendOutlined style={{ color: '#3b82f6' }} />
+            <Text strong style={{ color: '#e2e8f0', fontSize: 13 }}>Telegram 推送</Text>
+            <Switch
+              size="small"
+              checked={telegramEnabled}
+              onChange={handleTelegramEnabledChange}
+            />
+          </Space>
+
+          {telegramEnabled && (
+            <Space size={6} wrap>
+              <Input.Password
+                size="small"
+                placeholder="Bot Token"
+                value={telegramBotToken}
+                onChange={handleBotTokenChange}
+                style={{ width: 200, fontSize: 11 }}
+              />
+              <Input
+                size="small"
+                placeholder="Chat ID"
+                value={telegramChatId}
+                onChange={handleChatIdChange}
+                style={{ width: 130, fontSize: 11 }}
+              />
+              <Tooltip title="发送测试消息">
+                <Button
+                  size="small"
+                  icon={<SendOutlined />}
+                  loading={testingTelegram}
+                  onClick={handleTestTelegram}
+                  style={{ fontSize: 11 }}
+                >
+                  测试
+                </Button>
+              </Tooltip>
+            </Space>
+          )}
+        </div>
+      </Card>
+
       {/* 信号卡片 */}
       <div style={{ display: 'flex', gap: 12, marginBottom: 12 }}>
         <SignalCard coin="BTC" signal={btcSignal} />
@@ -401,13 +616,12 @@ const MarketAnalysisPage = () => {
             }}
           >
             {logs.map((item, i) => (
-              <MessageLogItem key={item.id} item={item} index={logs.length - 1 - i} />
+              <MessageLogItem key={item.id} item={item} index={i} />
             ))}
           </div>
         )}
       </Card>
 
-      {/* 全局样式（脉冲动画） */}
       <style>{`
         @keyframes pulse {
           0%, 100% { opacity: 1; }
