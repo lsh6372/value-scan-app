@@ -3,24 +3,20 @@
  * - SSE 订阅大盘信号（BTC / ETH）
  * - 通过 Cloudflare Worker 代理，解决 CORS 问题
  * - 实时展示信号状态 + 消息日志
- * - Telegram 信号变化推送
+ * - Telegram 信号变化推送（连接时自动启用，断开时自动禁用）
  */
 
 import { useState, useEffect, useRef, useCallback } from 'react'
-import {
-  Card, Button, Typography, Tag, Space, Empty, Badge,
-  Input, Switch, Collapse, Tooltip,
-} from 'antd'
+import { Card, Button, Typography, Tag, Space, Empty, Badge, Tooltip } from 'antd'
 import {
   PlayCircleOutlined,
   StopOutlined,
   ReloadOutlined,
   InfoCircleOutlined,
   SendOutlined,
-  SettingOutlined,
 } from '@ant-design/icons'
 import { buildSseUrl } from '@/api/sse-sign'
-import { sendTelegramMessage, buildSignalText } from '@/api/telegram'
+import { sendTelegramMessage, buildSignalText, isTelegramConfigured } from '@/api/telegram'
 import { message as antMessage } from 'antd'
 
 const { Text } = Typography
@@ -40,9 +36,7 @@ const SIGNAL_BG = {
 
 // ==================== 消息区块解析 ====================
 
-/** 按币种分割消息内容，返回 { btc, eth }
- *  分割依据：找 "BTC分析：" 和 "ETH分析：" 的位置，截取各自区间
- */
+/** 按币种分割消息内容，返回 { btc, eth } */
 const splitMessageByCoin = (text) => {
   if (!text) return { btc: '', eth: '' }
   const btcIdx = text.indexOf('BTC分析：')
@@ -173,17 +167,8 @@ const MessageLogItem = ({ item, index }) => {
         </div>
       )}
 
-      {/* 原始内容（折叠显示） */}
-      <div
-        style={{
-          fontSize: 11,
-          color: '#64748b',
-          lineHeight: 1.6,
-          whiteSpace: 'pre-wrap',
-          maxHeight: 60,
-          overflow: 'hidden',
-        }}
-      >
+      {/* 原始内容 */}
+      <div style={{ fontSize: 11, color: '#64748b', lineHeight: 1.6, whiteSpace: 'pre-wrap', maxHeight: 60, overflow: 'hidden' }}>
         {item.content}
       </div>
     </div>
@@ -202,12 +187,8 @@ const MarketAnalysisPage = () => {
   const [logs, setLogs] = useState([])
   // 最后更新时间
   const [lastUpdated, setLastUpdated] = useState(null)
-
-  // Telegram 配置
-  const [telegramEnabled, setTelegramEnabled] = useState(false)
-  const [telegramBotToken, setTelegramBotToken] = useState('')
-  const [telegramChatId, setTelegramChatId] = useState('')
-  const [testingTelegram, setTestingTelegram] = useState(false)
+  // Telegram 推送状态（连接时自动启用）
+  const [pushEnabled, setPushEnabled] = useState(false)
 
   const eventSourceRef = useRef(null)
   const reconnectTimerRef = useRef(null)
@@ -218,81 +199,16 @@ const MarketAnalysisPage = () => {
   const prevBtcSignalRef = useRef(null)
   const prevEthSignalRef = useRef(null)
 
-  // ==================== Telegram 配置（localStorage） ====================
+  // ==================== Telegram 推送 ====================
 
-  useEffect(() => {
-    const saved = localStorage.getItem('vs_telegram_config')
-    if (saved) {
-      try {
-        const cfg = JSON.parse(saved)
-        setTelegramEnabled(!!cfg.enabled)
-        setTelegramBotToken(cfg.botToken || '')
-        setTelegramChatId(cfg.chatId || '')
-      } catch { /* ignore */ }
-    }
-  }, [])
-
-  const saveTelegramConfig = (enabled, botToken, chatId) => {
-    localStorage.setItem('vs_telegram_config', JSON.stringify({ enabled, botToken, chatId }))
-  }
-
-  const handleTelegramEnabledChange = (checked) => {
-    setTelegramEnabled(checked)
-    saveTelegramConfig(checked, telegramBotToken, telegramChatId)
-  }
-
-  const handleBotTokenChange = (e) => {
-    const val = e.target.value
-    setTelegramBotToken(val)
-    saveTelegramConfig(telegramEnabled, val, telegramChatId)
-  }
-
-  const handleChatIdChange = (e) => {
-    const val = e.target.value
-    setTelegramChatId(val)
-    saveTelegramConfig(telegramEnabled, telegramBotToken, val)
-  }
-
-  // 测试 Telegram
-  const handleTestTelegram = async () => {
-    if (!telegramBotToken || !telegramChatId) {
-      antMessage.warning('请先填写 Bot Token 和 Chat ID')
-      return
-    }
-    setTestingTelegram(true)
+  const notifySignalChange = useCallback(async (newBtc, newEth) => {
+    if (!pushEnabled || !isTelegramConfigured()) return
     try {
-      const res = await fetch(`${buildSseUrl()}/telegram`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text: '✅ ValueScan Telegram 推送测试成功！\n\n如果你收到这条消息，说明配置正确。',
-        }),
-      })
-      const data = await res.json()
-      if (data.ok) {
-        antMessage.success('测试消息发送成功！')
-      } else {
-        antMessage.error(data.error || '发送失败')
-      }
-    } catch (err) {
-      antMessage.error(err.message)
-    } finally {
-      setTestingTelegram(false)
-    }
-  }
-
-  // ==================== 发送 Telegram 信号变化通知 ====================
-
-  const notifySignalChange = useCallback(async (coin, newSignal) => {
-    if (!telegramEnabled || !buildSseUrl()) return
-    try {
-      const signals = { btc: btcSignal, eth: ethSignal }
-      const text = buildSignalText(signals)
-      await sendTelegramMessage(text)
+      await sendTelegramMessage(buildSignalText({ btc: newBtc, eth: newEth }))
     } catch (err) {
       console.error('Telegram 推送失败:', err)
     }
-  }, [telegramEnabled, btcSignal, ethSignal])
+  }, [pushEnabled])
 
   // ==================== SSE 连接 ====================
 
@@ -313,6 +229,7 @@ const MarketAnalysisPage = () => {
     }
 
     setConnStatus('connecting')
+    setPushEnabled(true)  // 连接时自动启用推送
 
     const es = new EventSource(url)
     eventSourceRef.current = es
@@ -326,13 +243,12 @@ const MarketAnalysisPage = () => {
       setConnStatus('error')
       es.close()
       eventSourceRef.current = null
+      setPushEnabled(false)  // 断开时自动禁用推送
 
       const delay = reconnectDelayRef.current
       reconnectDelayRef.current = Math.min(delay * 2, 60)
       antMessage.warning(`连接断开，${delay}s 后自动重连...`)
-      reconnectTimerRef.current = setTimeout(() => {
-        connect()
-      }, delay * 1000)
+      reconnectTimerRef.current = setTimeout(() => connect(), delay * 1000)
     }
 
     es.addEventListener('market', (e) => {
@@ -345,20 +261,19 @@ const MarketAnalysisPage = () => {
         const newBtc = parseSignal(content, 'BTC')
         const newEth = parseSignal(content, 'ETH')
 
-        // 检测信号变化 → Telegram 推送
+        // 检测信号变化 → 推送 Telegram
         if (newBtc && newBtc !== prevBtcSignalRef.current) {
           prevBtcSignalRef.current = newBtc
           setBtcSignal(newBtc)
-          // 信号变化时通知（延迟一点，等两个信号都解析完再发）
-          setTimeout(() => notifySignalChange('BTC', newBtc), 100)
+          setTimeout(() => notifySignalChange(newBtc, newEth), 100)
         }
         if (newEth && newEth !== prevEthSignalRef.current) {
           prevEthSignalRef.current = newEth
           setEthSignal(newEth)
-          setTimeout(() => notifySignalChange('ETH', newEth), 100)
+          setTimeout(() => notifySignalChange(newBtc, newEth), 100)
         }
 
-        // 首次收到信号时也通知（prevRef 初始为 null）
+        // 首次收到信号时也推送
         if (newBtc && !prevBtcSignalRef.current) {
           prevBtcSignalRef.current = newBtc
           setBtcSignal(newBtc)
@@ -380,9 +295,7 @@ const MarketAnalysisPage = () => {
     })
   }, [notifySignalChange])
 
-  const handleStart = () => {
-    connect()
-  }
+  const handleStart = () => connect()
 
   const handleStop = () => {
     if (reconnectTimerRef.current) {
@@ -394,6 +307,7 @@ const MarketAnalysisPage = () => {
       eventSourceRef.current = null
     }
     setConnStatus('idle')
+    setPushEnabled(false)  // 手动断开时也禁用推送
   }
 
   useEffect(() => {
@@ -432,29 +346,13 @@ const MarketAnalysisPage = () => {
     const label = signal || '等待数据...'
 
     return (
-      <div
-        style={{
-          flex: 1,
-          minWidth: 140,
-          padding: '20px 24px',
-          background: colors.bg,
-          border: `1px solid ${colors.border}`,
-          borderRadius: 12,
-          textAlign: 'center',
-        }}
-      >
-        <Text style={{ fontSize: 13, color: '#94a3b8', display: 'block', marginBottom: 8 }}>
-          {coin}
-        </Text>
-        <Text style={{
-          fontSize: 28,
-          fontWeight: 700,
-          color: colors.text,
-          display: 'block',
-          lineHeight: 1.2,
-        }}>
-          {label}
-        </Text>
+      <div style={{
+        flex: 1, minWidth: 140, padding: '20px 24px',
+        background: colors.bg, border: `1px solid ${colors.border}`,
+        borderRadius: 12, textAlign: 'center',
+      }}>
+        <Text style={{ fontSize: 13, color: '#94a3b8', display: 'block', marginBottom: 8 }}>{coin}</Text>
+        <Text style={{ fontSize: 28, fontWeight: 700, color: colors.text, display: 'block', lineHeight: 1.2 }}>{label}</Text>
       </div>
     )
   }
@@ -462,27 +360,12 @@ const MarketAnalysisPage = () => {
   return (
     <div>
       {/* 顶部控制栏 */}
-      <Card
-        bordered={false}
-        size="small"
-        styles={{ body: { padding: '12px 16px' } }}
-        style={{ marginBottom: 12 }}
-      >
-        <div style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          flexWrap: 'wrap',
-          gap: 8,
-        }}>
+      <Card bordered={false} size="small" styles={{ body: { padding: '12px 16px' } }} style={{ marginBottom: 12 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: 8 }}>
           <Space size={12}>
             <Text strong style={{ color: '#fff', fontSize: 15 }}>大盘分析</Text>
             <StatusBadge />
-            {lastUpdated && (
-              <Text type="secondary" style={{ fontSize: 11 }}>
-                更新 {formatTime(lastUpdated)}
-              </Text>
-            )}
+            {lastUpdated && <Text type="secondary" style={{ fontSize: 11 }}>更�� {formatTime(lastUpdated)}</Text>}
           </Space>
           <Space>
             <Button
@@ -494,73 +377,29 @@ const MarketAnalysisPage = () => {
             >
               启动订阅
             </Button>
-            <Button
-              danger
-              icon={<StopOutlined />}
-              onClick={handleStop}
-              disabled={connStatus === 'idle'}
-            >
+            <Button danger icon={<StopOutlined />} onClick={handleStop} disabled={connStatus === 'idle'}>
               终止订阅
             </Button>
           </Space>
         </div>
       </Card>
 
-      {/* Telegram 配置区 */}
-      <Card
-        bordered={false}
-        size="small"
-        styles={{ body: { padding: '10px 16px' } }}
-        style={{ marginBottom: 12 }}
-      >
-        <div style={{
-          display: 'flex',
-          justifyContent: 'space-between',
-          alignItems: 'center',
-          flexWrap: 'wrap',
-          gap: 10,
-        }}>
-          <Space size={12}>
-            <SendOutlined style={{ color: '#3b82f6' }} />
-            <Text strong style={{ color: '#e2e8f0', fontSize: 13 }}>Telegram 推送</Text>
-            <Switch
-              size="small"
-              checked={telegramEnabled}
-              onChange={handleTelegramEnabledChange}
-            />
-          </Space>
-
-          {telegramEnabled && (
-            <Space size={6} wrap>
-              <Input.Password
-                size="small"
-                placeholder="Bot Token"
-                value={telegramBotToken}
-                onChange={handleBotTokenChange}
-                style={{ width: 200, fontSize: 11 }}
-              />
-              <Input
-                size="small"
-                placeholder="Chat ID"
-                value={telegramChatId}
-                onChange={handleChatIdChange}
-                style={{ width: 130, fontSize: 11 }}
-              />
-              <Tooltip title="发送测试消息">
-                <Button
-                  size="small"
-                  icon={<SendOutlined />}
-                  loading={testingTelegram}
-                  onClick={handleTestTelegram}
-                  style={{ fontSize: 11 }}
-                >
-                  测试
-                </Button>
+      {/* Telegram 推送状态 */}
+      {connStatus === 'connected' && (
+        <Card bordered={false} size="small" styles={{ body: { padding: '8px 16px' }}} style={{ marginBottom: 12 }}>
+          <Space>
+            <SendOutlined style={{ color: pushEnabled ? '#52c41a' : '#666' }} />
+            <Text style={{ fontSize: 12, color: pushEnabled ? '#52c41a' : '#666' }}>
+              Telegram {pushEnabled ? '已启用' : '已关闭'}
+            </Text>
+            {!isTelegramConfigured() && (
+              <Tooltip title="在 .env.local 中配置 VITE_TELEGRAM_BOT_TOKEN 和 VITE_TELEGRAM_CHAT_ID">
+                <Text type="secondary" style={{ fontSize: 11 }}>（未配置）</Text>
               </Tooltip>
-            </Space>
-          )}
-        </div>
-      </Card>
+            )}
+          </Space>
+        </Card>
+      )}
 
       {/* 信号卡片 */}
       <div style={{ display: 'flex', gap: 12, marginBottom: 12 }}>
@@ -577,22 +416,12 @@ const MarketAnalysisPage = () => {
           <Space>
             <InfoCircleOutlined style={{ color: '#3b82f6' }} />
             <span style={{ color: '#e2e8f0', fontSize: 13 }}>实时消息</span>
-            <Badge
-              count={logs.length}
-              style={{ backgroundColor: '#334155', fontSize: 10 }}
-              overflowCount={99}
-            />
+            <Badge count={logs.length} style={{ backgroundColor: '#334155', fontSize: 10 }} overflowCount={99} />
           </Space>
         }
         extra={
           logs.length > 0 && (
-            <Button
-              type="text"
-              size="small"
-              icon={<ReloadOutlined />}
-              onClick={() => setLogs([])}
-              style={{ color: '#94a3b8', fontSize: 11 }}
-            >
+            <Button type="text" size="small" icon={<ReloadOutlined />} onClick={() => setLogs([])} style={{ color: '#94a3b8', fontSize: 11 }}>
               清空
             </Button>
           )
@@ -608,26 +437,13 @@ const MarketAnalysisPage = () => {
             style={{ padding: '40px 0' }}
           />
         ) : (
-          <div
-            style={{
-              maxHeight: 480,
-              overflowY: 'auto',
-              background: '#111827',
-            }}
-          >
-            {logs.map((item, i) => (
-              <MessageLogItem key={item.id} item={item} index={i} />
-            ))}
+          <div style={{ maxHeight: 480, overflowY: 'auto', background: '#111827' }}>
+            {logs.map((item, i) => <MessageLogItem key={item.id} item={item} index={i} />)}
           </div>
         )}
       </Card>
 
-      <style>{`
-        @keyframes pulse {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.4; }
-        }
-      `}</style>
+      <style>{`@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.4; } }`}</style>
     </div>
   )
 }
